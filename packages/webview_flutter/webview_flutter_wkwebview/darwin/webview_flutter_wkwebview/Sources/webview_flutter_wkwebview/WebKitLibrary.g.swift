@@ -579,7 +579,7 @@ open class WebKitLibraryPigeonProxyApiRegistrar {
     }
 
     public func onDeinit(identifier: Int64) {
-      NSLog("[WebKitLibrary] *****InstanceManagerApiFinalizerDelegate onDeinit for identifier: %lld", identifier)
+      NSLog("[WebKitLibrary] **111222***InstanceManagerApiFinalizerDelegate onDeinit for identifier: %lld", identifier)
       
       // Check if Flutter engine is still active
       if let manager = api.instanceManager, manager.engineDetached {
