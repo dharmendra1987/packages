@@ -33,6 +33,8 @@ public class WebViewFlutterPlugin: NSObject, FlutterPlugin {
   }
 
   public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
+    NSLog("[WebKitLibrary] detachFromEngine11 all calls to Dart will be ignored.")
+    proxyApiRegistrar!.instanceManager.markEngineDetached()
     proxyApiRegistrar!.ignoreCallsToDart = true
     proxyApiRegistrar!.tearDown()
     proxyApiRegistrar = nil

@@ -94,6 +94,7 @@ internal final class WebKitLibraryPigeonInternalFinalizer {
   internal weak var delegate: WebKitLibraryPigeonInternalFinalizerDelegate?
 
   private init(identifier: Int64, delegate: WebKitLibraryPigeonInternalFinalizerDelegate) {
+      NSLog("[WebKitLibrary] WebKitLibraryPigeonInternalFinalizer: init")
     self.identifier = identifier
     self.delegate = delegate
   }
@@ -102,11 +103,13 @@ internal final class WebKitLibraryPigeonInternalFinalizer {
     to instance: AnyObject, identifier: Int64,
     delegate: WebKitLibraryPigeonInternalFinalizerDelegate
   ) {
+      NSLog("[WebKitLibrary] WebKitLibraryPigeonInternalFinalizer: attach")
     let finalizer = WebKitLibraryPigeonInternalFinalizer(identifier: identifier, delegate: delegate)
     objc_setAssociatedObject(instance, associatedObjectKey, finalizer, .OBJC_ASSOCIATION_RETAIN)
   }
 
   static func detach(from instance: AnyObject) {
+      NSLog("[WebKitLibrary] WebKitLibraryPigeonInternalFinalizer: detach")
     let finalizer =
       objc_getAssociatedObject(instance, associatedObjectKey)
       as? WebKitLibraryPigeonInternalFinalizer
@@ -117,6 +120,7 @@ internal final class WebKitLibraryPigeonInternalFinalizer {
   }
 
   deinit {
+    NSLog("[WebKitLibrary] WebKitLibraryPigeonInternalFinalizer: deinit")
     delegate?.onDeinit(identifier: identifier)
   }
 }
@@ -137,6 +141,12 @@ internal final class WebKitLibraryPigeonInternalFinalizer {
 ///
 /// Accessing and inserting to an InstanceManager is thread safe.
 final class WebKitLibraryPigeonInstanceManager {
+    internal var engineDetached = false
+
+        func markEngineDetached() {
+           NSLog("[WebKitLibrary] markEngineDetached called")
+            engineDetached = true
+        }
   // Identifiers are locked to a specific range to avoid collisions with objects
   // created simultaneously from Dart.
   // Host uses identifiers >= 2^16 and Dart is expected to use values n where,
@@ -312,9 +322,13 @@ private class WebKitLibraryPigeonInstanceManagerApi {
 
   /// Handles sending and receiving messages with Dart.
   unowned let binaryMessenger: FlutterBinaryMessenger
+  
+  /// Weak reference to the instance manager to check engine detachment status.
+  weak var instanceManager: WebKitLibraryPigeonInstanceManager?
 
-  init(binaryMessenger: FlutterBinaryMessenger) {
+  init(binaryMessenger: FlutterBinaryMessenger, instanceManager: WebKitLibraryPigeonInstanceManager? = nil) {
     self.binaryMessenger = binaryMessenger
+    self.instanceManager = instanceManager
   }
 
   /// Sets up an instance of `WebKitLibraryPigeonInstanceManagerApi` to handle messages through the `binaryMessenger`.
@@ -343,7 +357,7 @@ private class WebKitLibraryPigeonInstanceManagerApi {
     let clearChannel = FlutterBasicMessageChannel(
       name: "dev.flutter.pigeon.webview_flutter_wkwebview.PigeonInternalInstanceManager.clear",
       binaryMessenger: binaryMessenger, codec: codec)
-    if let instanceManager = instanceManager {
+    if let instanceManager: WebKitLibraryPigeonInstanceManager = instanceManager {
       clearChannel.setMessageHandler { _, reply in
         do {
           try instanceManager.removeAllObjects()
@@ -361,12 +375,24 @@ private class WebKitLibraryPigeonInstanceManagerApi {
   func removeStrongReference(
     identifier identifierArg: Int64, completion: @escaping (Result<Void, PigeonError>) -> Void
   ) {
+    NSLog("[WebKitLibrary] removeStrongReference11 called for identifier: %lld", identifierArg)
+    
+    // If the Flutter engine has been detached, don't attempt to send messages
+    if let manager = instanceManager, manager.engineDetached {
+      NSLog("[WebKitLibrary] Engine is detached, skipping message send for identifier: %lld", identifierArg)
+      completion(.success(()))
+      return
+    }
+    
+    NSLog("[WebKitLibrary] Sending removeStrongReference message for identifier: %lld", identifierArg)
     let channelName: String =
       "dev.flutter.pigeon.webview_flutter_wkwebview.PigeonInternalInstanceManager.removeStrongReference"
     let channel = FlutterBasicMessageChannel(
       name: channelName, binaryMessenger: binaryMessenger, codec: codec)
     channel.sendMessage([identifierArg] as [Any?]) { response in
+      NSLog("[WebKitLibrary] Received response for identifier: %lld", identifierArg)
       guard let listResponse = response as? [Any?] else {
+        NSLog("[WebKitLibrary] Connection error for identifier: %lld", identifierArg)
         completion(.failure(createConnectionError(withChannelName: channelName)))
         return
       }
@@ -374,8 +400,10 @@ private class WebKitLibraryPigeonInstanceManagerApi {
         let code: String = listResponse[0] as! String
         let message: String? = nilOrValue(listResponse[1])
         let details: String? = nilOrValue(listResponse[2])
+        NSLog("[WebKitLibrary] Error response for identifier: %lld, code: %@", identifierArg, code)
         completion(.failure(PigeonError(code: code, message: message, details: details)))
       } else {
+        NSLog("[WebKitLibrary] Successfully removed strong reference for identifier: %lld", identifierArg)
         completion(.success(()))
       }
     }
@@ -551,18 +579,34 @@ open class WebKitLibraryPigeonProxyApiRegistrar {
     }
 
     public func onDeinit(identifier: Int64) {
-      api.removeStrongReference(identifier: identifier) {
-        _ in
+      NSLog("[WebKitLibrary] *****InstanceManagerApiFinalizerDelegate onDeinit for identifier: %lld", identifier)
+      
+      // Check if Flutter engine is still active
+      if let manager = api.instanceManager, manager.engineDetached {
+        NSLog("[WebKitLibrary] Engine already detached in onDeinit, skipping removeStrongReference for identifier: %lld", identifier)
+        return
       }
+      
+      //for now commenting this code to avoid crashes during engine detachment
+      // api.removeStrongReference(identifier: identifier) { result in
+      //   switch result {
+      //   case .success:
+      //     break
+      //   case .failure(let error):
+      //     NSLog("[WebKitLibrary] Failed to remove strong reference for identifier: %lld, error: %@", identifier, error.localizedDescription)
+      //   }
+      // }
     }
   }
 
   init(binaryMessenger: FlutterBinaryMessenger, apiDelegate: WebKitLibraryPigeonProxyApiDelegate) {
     self.binaryMessenger = binaryMessenger
     self.apiDelegate = apiDelegate
+    let instanceManagerApi = WebKitLibraryPigeonInstanceManagerApi(binaryMessenger: binaryMessenger)
     self.instanceManager = WebKitLibraryPigeonInstanceManager(
-      finalizerDelegate: InstanceManagerApiFinalizerDelegate(
-        WebKitLibraryPigeonInstanceManagerApi(binaryMessenger: binaryMessenger)))
+      finalizerDelegate: InstanceManagerApiFinalizerDelegate(instanceManagerApi))
+    // Set the instance manager reference after initialization to avoid circular dependency
+    instanceManagerApi.instanceManager = self.instanceManager
   }
 
   func setUp() {
